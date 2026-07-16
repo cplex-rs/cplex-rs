@@ -24,27 +24,34 @@ fn main() {
         println!("cargo:warning=Detected OS: {}", os);
         println!("cargo:warning=Detected arch: {}", arch);
 
-        let os_string = if os == "linux" && arch == "x86_64" {
-            "x86-64_linux"
+        let cplex_include = cplex_installation_path.join("include");
+
+        if os == "linux" && arch == "x86_64" {
+            let lib = cplex_installation_path.join("lib/x86-64_linux/static_pic");
+            println!("cargo:rustc-link-search={}", lib.display());
+            println!("cargo:rustc-link-lib=cplex");
         } else if os == "macos" && arch == "aarch64" {
-            "arm64_osx"
+            let lib = cplex_installation_path.join("lib/arm64_osx/static_pic");
+            println!("cargo:rustc-link-search={}", lib.display());
+            println!("cargo:rustc-link-lib=cplex");
+        } else if os == "windows" && arch == "x86_64" {
+            let lib = cplex_installation_path.join("lib/x64_windows_msvc14/stat_mda");
+            println!("cargo:rustc-link-search={}", lib.display());
+            // CPLEX ships a versioned lib on Windows (e.g. cplex2211.lib).
+            // Discover it at build time rather than hard-coding the version.
+            let lib_name = std::fs::read_dir(&lib)
+                .expect("Could not read CPLEX lib directory")
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|name| name.starts_with("cplex") && name.ends_with(".lib"))
+                .expect("Could not find cplex*.lib in CPLEX lib directory");
+            let stem = lib_name.trim_end_matches(".lib");
+            println!("cargo:rustc-link-lib={stem}");
         } else {
             panic!("Unsupported OS-arch combination: {}-{}", os, arch);
         };
 
-        let cplex_lib_path = cplex_installation_path.join(format!("lib/{os_string}/static_pic"));
-
-        // Tell cargo to look for shared libraries in the specified directory
-        println!(
-            "cargo:rustc-link-search={}",
-            cplex_lib_path.as_os_str().to_string_lossy()
-        );
-
-        // Tell cargo to tell rustc to link the system cplex
-        // static library.
-        println!("cargo:rustc-link-lib=cplex");
-
-        cplex_installation_path.join("include")
+        cplex_include
     };
 
     // The bindgen::Builder is the main entry point

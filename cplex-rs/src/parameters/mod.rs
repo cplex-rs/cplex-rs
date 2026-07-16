@@ -6,7 +6,7 @@ pub mod read;
 pub mod tolerances;
 
 use std::{
-    ffi::{c_double, c_int, c_long},
+    ffi::{c_double, c_int},
     time::Duration,
 };
 
@@ -40,7 +40,7 @@ pub trait Parameter: private::Parameter {
 #[derive(Copy, Clone, Debug)]
 pub enum ParameterValue {
     Integer(c_int),
-    Long(c_long),
+    Long(i64),
     Double(c_double),
     String(&'static str),
 }
