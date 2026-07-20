@@ -36,9 +36,10 @@ pub use errors::{Error, Result};
 pub use ffi;
 use ffi::{
     cpxlp, CPX_STAT_INForUNBD, CPXaddmipstarts, CPXaddrows, CPXchgobj, CPXchgobjsen,
-    CPXchgprobtype, CPXcreateprob, CPXfreeprob, CPXgetobjval, CPXgetstat, CPXgetx, CPXlpopt,
-    CPXmipopt, CPXnewcols, CPXwriteprob, CPXMIP_UNBOUNDED, CPXPROB_LP, CPXPROB_MILP, CPX_MAX,
-    CPX_MIN, CPX_STAT_INFEASIBLE, CPX_STAT_UNBOUNDED,
+    CPXchgprobtype, CPXchgqpcoef, CPXcreateprob, CPXfreeprob, CPXgetobjval, CPXgetstat, CPXgetx,
+    CPXlpopt, CPXmipopt, CPXnewcols, CPXqpopt, CPXwriteprob, CPXMIP_UNBOUNDED, CPXPROB_LP,
+    CPXPROB_MILP, CPXPROB_MIQP, CPXPROB_QP, CPX_MAX, CPX_MIN, CPX_STAT_INFEASIBLE,
+    CPX_STAT_UNBOUNDED,
 };
 use log::debug;
 pub use solution::*;
@@ -115,6 +116,8 @@ impl ObjectiveType {
 pub enum ProblemType {
     Linear,
     MixedInteger,
+    Quadratic,
+    MixedIntegerQuadratic,
 }
 
 impl ProblemType {
@@ -122,6 +125,8 @@ impl ProblemType {
         match self {
             ProblemType::Linear => CPXPROB_LP as c_int,
             ProblemType::MixedInteger => CPXPROB_MILP as c_int,
+            ProblemType::Quadratic => CPXPROB_QP as c_int,
+            ProblemType::MixedIntegerQuadratic => CPXPROB_MIQP as c_int,
         }
     }
 }
@@ -368,6 +373,49 @@ impl Problem {
         self.set_objective_type(ty)
     }
 
+    /// Set quadratic objective coefficients, following the CPLEX convention.
+    /// The objective is `c'x + 1/2 x'Qx`, and each entry `(i, j, v)` sets `Q[i][j]`.
+    ///
+    /// - `(i, i, v)` sets the diagonal entry `Q[i][i]`, contributing `1/2 * v * x_i^2`
+    /// - `(i, j, v)` with `i != j` sets both `Q[i][j]` and `Q[j][i]`, contributing
+    ///    `v * x_i * x_j`. `(i, j, v)` and `(j, i, v)` are equivalent
+    ///
+    /// E.g. to minimize `x^2`, pass `(x, x, 2.0)`. If the same unordered pair appears more than
+    /// once, the last entry wins.
+    ///
+    /// Setting quadratic coefficients changes the CPLEX problem type to a quadratic one.
+    /// Solve with [`ProblemType::Quadratic`] or [`ProblemType::MixedIntegerQuadratic`].
+    ///
+    /// For minimization the quadratic part must be convex (`Q` positive semidefinite), for
+    /// maximization concave (`Q` negative semidefinite).
+    pub fn set_quadratic_objective(self, obj: Vec<(VariableId, VariableId, f64)>) -> Result<Self> {
+        if let Some((i, j, _)) = obj
+            .iter()
+            .find(|(i, j, _)| i.0 >= self.variables.len() || j.0 >= self.variables.len())
+        {
+            return Err(errors::Input::from_message(format!(
+                "quadratic objective entry ({}, {}) out of bounds for problem with {} variables",
+                i.0,
+                j.0,
+                self.variables.len()
+            ))
+            .into());
+        }
+
+        for (i, j, value) in obj {
+            macros::cpx_lp_result!(unsafe {
+                CPXchgqpcoef(
+                    self.env.inner,
+                    self.inner,
+                    i.0 as c_int,
+                    j.0 as c_int,
+                    value,
+                )
+            })?;
+        }
+        Ok(self)
+    }
+
     /// Change the objective type. Default: `ObjectiveType::Minimize`.
     pub fn set_objective_type(self, ty: ObjectiveType) -> Result<Self> {
         macros::cpx_lp_result!(unsafe { CPXchgobjsen(self.env.inner, self.inner, ty.into_raw()) })?;
@@ -424,11 +472,14 @@ impl Problem {
 
         let start_optim = Instant::now();
         match pt {
-            ProblemType::MixedInteger => {
+            ProblemType::MixedInteger | ProblemType::MixedIntegerQuadratic => {
                 macros::cpx_lp_result!(unsafe { CPXmipopt(self.env.inner, self.inner) })?
             }
             ProblemType::Linear => {
                 macros::cpx_lp_result!(unsafe { CPXlpopt(self.env.inner, self.inner) })?
+            }
+            ProblemType::Quadratic => {
+                macros::cpx_lp_result!(unsafe { CPXqpopt(self.env.inner, self.inner) })?
             }
         };
         let elapsed = start_optim.elapsed();
@@ -688,6 +739,93 @@ mod test {
         assert!(matches!(
             problem.solve_as(ProblemType::MixedInteger),
             Err(errors::Error::Cplex(errors::Cplex::Unbounded { .. }))
+        ));
+    }
+
+    #[test]
+    fn qpex1() {
+        let env = Environment::new().unwrap();
+        let mut problem = Problem::new(env, "qpex1").unwrap();
+
+        let vars = problem
+            .add_variables(vec![
+                Variable::new(VariableType::Continuous, 1.0, 0.0, 40.0, "x0"),
+                Variable::new(VariableType::Continuous, 2.0, 0.0, INFINITY, "x1"),
+                Variable::new(VariableType::Continuous, 3.0, 0.0, INFINITY, "x2"),
+            ])
+            .unwrap();
+
+        problem
+            .add_constraints(vec![
+                Constraint::new(
+                    ConstraintType::LessThanEq,
+                    20.0,
+                    None,
+                    vec![(vars[0], -1.0), (vars[1], 1.0), (vars[2], 1.0)],
+                ),
+                Constraint::new(
+                    ConstraintType::LessThanEq,
+                    30.0,
+                    None,
+                    vec![(vars[0], 1.0), (vars[1], -3.0), (vars[2], 1.0)],
+                ),
+            ])
+            .unwrap();
+
+        // maximize x0 + 2 x1 + 3 x2
+        //          - 0.5 (33 x0^2 + 22 x1^2 + 11 x2^2 - 12 x0 x1 - 23 x1 x2)
+        let solution = problem
+            .set_objective_type(ObjectiveType::Maximize)
+            .unwrap()
+            .set_quadratic_objective(vec![
+                (vars[0], vars[0], -33.0),
+                (vars[1], vars[1], -22.0),
+                (vars[2], vars[2], -11.0),
+                (vars[0], vars[1], 6.0),
+                (vars[1], vars[2], 11.5),
+            ])
+            .unwrap()
+            .solve_as(ProblemType::Quadratic)
+            .unwrap();
+
+        assert!((solution.objective_value() - 2.015617).abs() < 1e-4);
+    }
+
+    #[test]
+    fn miqp_simple() {
+        let env = Environment::new().unwrap();
+        let mut problem = Problem::new(env, "miqp_simple").unwrap();
+
+        // minimize x^2 - 2.6 x, x integer in [0, 10] => x = 1, objective -1.6
+        // x^2 = 1/2 * 2.0 * x^2, so Q[x][x] = 2.0
+        let x = problem
+            .add_variable(Variable::new(VariableType::Integer, -2.6, 0.0, 10.0, "x"))
+            .unwrap();
+
+        let solution = problem
+            .set_objective_type(ObjectiveType::Minimize)
+            .unwrap()
+            .set_quadratic_objective(vec![(x, x, 2.0)])
+            .unwrap()
+            .solve_as(ProblemType::MixedIntegerQuadratic)
+            .unwrap();
+
+        assert!((solution.variable_value(x) - 1.0).abs() < 1e-6);
+        assert!((solution.objective_value() + 1.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quadratic_objective_out_of_bounds() {
+        let env = Environment::new().unwrap();
+        let mut problem = Problem::new(env, "qp_oob").unwrap();
+
+        let x = problem
+            .add_variable(Variable::new(VariableType::Continuous, 1.0, 0.0, 1.0, "x"))
+            .unwrap();
+
+        assert!(matches!(
+            problem.set_quadratic_objective(vec![(x, VariableId(5), 1.0)]),
+            Err(errors::Error::Input(_))
         ));
     }
 }
