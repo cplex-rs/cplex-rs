@@ -378,7 +378,7 @@ impl Problem {
     ///
     /// - `(i, i, v)` sets the diagonal entry `Q[i][i]`, contributing `1/2 * v * x_i^2`
     /// - `(i, j, v)` with `i != j` sets both `Q[i][j]` and `Q[j][i]`, contributing
-    ///    `v * x_i * x_j`. `(i, j, v)` and `(j, i, v)` are equivalent
+    ///   `v * x_i * x_j`. `(i, j, v)` and `(j, i, v)` are equivalent
     ///
     /// E.g. to minimize `x^2`, pass `(x, x, 2.0)`. If the same unordered pair appears more than
     /// once, the last entry wins.
