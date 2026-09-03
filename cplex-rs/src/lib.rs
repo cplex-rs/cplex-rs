@@ -25,6 +25,7 @@ pub mod constants;
 mod constraints;
 mod environment;
 pub mod errors;
+mod iis;
 pub mod logging;
 pub mod parameters;
 mod solution;
@@ -41,6 +42,7 @@ use ffi::{
     CPXPROB_MILP, CPXPROB_MIQP, CPXPROB_QP, CPX_MAX, CPX_MIN, CPX_STAT_INFEASIBLE,
     CPX_STAT_UNBOUNDED,
 };
+pub use iis::*;
 use log::debug;
 pub use solution::*;
 pub use variables::*;
